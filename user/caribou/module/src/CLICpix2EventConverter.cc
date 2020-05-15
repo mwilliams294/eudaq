@@ -1,9 +1,9 @@
 #include "CaribouEvent2StdEventConverter.hh"
-
 #include "framedecoder/clicpix2_frameDecoder.hpp"
 #include "utils/log.hpp"
 #include "clicpix2_pixels.hpp"
-
+#include <math.h>
+#include <dirent.h>
 using namespace eudaq;
 
 namespace{
@@ -21,6 +21,33 @@ bool CLICpix2Event2StdEventConverter::Converting(eudaq::EventSPC d1, eudaq::Stan
   auto longcnt = conf->Get("longcnt", false);
   auto comp = conf->Get("comp", true);
   auto sp_comp = conf->Get("sp_comp", true);
+  auto calibfile = conf->Get("calibration_file", "");
+
+  float matrix_A [128][128];
+  float matrix_B [128][128];
+  float matrix_C [128][128];
+  float matrix_T [128][128];
+
+  int read_col, read_row;
+  float read_A, read_B, read_C, read_T;
+
+  if(!calibfile.empty()){
+    std::ifstream f;
+    f.open(calibfile.c_str(),std::ios::binary|std::ios::in);
+    if (!f.is_open()){
+        EUDAQ_WARN("Cannot open calibration file: " + calibfile);
+    }
+    for (int row=0; row<128; row++){
+      for (int col=0; col<128; col++){
+        f.read((char *)&read_col, sizeof(int));
+        f.read((char *)&read_row, sizeof(int));
+        f.read((char *)&matrix_A[col][row], sizeof(float));
+        f.read((char *)&matrix_B[col][row], sizeof(float));
+        f.read((char *)&matrix_C[col][row], sizeof(float));
+        f.read((char *)&matrix_T[col][row], sizeof(float));
+      }
+    }
+  }
 
   // Integer to allow skipping pixels with certain ToT values directly when decoding
   auto discard_tot_below = conf->Get("discard_tot_below", -1);
@@ -174,6 +201,20 @@ bool CLICpix2Event2StdEventConverter::Converting(eudaq::EventSPC d1, eudaq::Stan
       // Check if we want to skip low ToT values. Only skip if we actually read a ToT value
       if(tot < discard_tot_below) {
         continue;
+      }
+      if(!calibfile.empty()){
+        auto a = matrix_A[col][row];
+        auto b = matrix_B[col][row];
+        auto c = matrix_C[col][row];
+        auto t = matrix_T[col][row];
+        if(a < std::numeric_limits<double>::epsilon()){
+          continue;
+        }
+        double tot_inelectrons=(sqrt(a*a*t*t +2*a*b*t +4*a*c -2*a*t* static_cast<float>(tot)
+                                + b*b -2*b*static_cast<float>(tot) +static_cast<float>(tot*tot))
+                                +a*t -b +static_cast<float>(tot))
+                                /(2*a);
+        tot=floor(tot_inelectrons);
       }
     } catch(caribou::DataException&) {
       // Set ToT to one if not defined.
